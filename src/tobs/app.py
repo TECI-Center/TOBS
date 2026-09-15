@@ -9,8 +9,10 @@ from tkinter import ttk
 import cv2
 from PIL import Image, ImageTk
 
+from .audio import AudioDevice, enumerate_microphones
 from .camera import CameraStream
 from .devices import DeviceInfo, enumerate_devices
+from .recorder import CombinedRecorder
 
 RECORDINGS_DIR = os.path.join(os.getcwd(), "recordings")
 PREVIEW_W = 480
@@ -162,6 +164,9 @@ class CameraPanel(ttk.Frame):
         rec = "  ●REC" if self.stream.recording else ""
         conn = "Live" if self.stream.connected else "Reconnecting…"
         color = "#66cc66" if self.stream.connected else "#cc9966"
+        if self.stream.connected and self.stream.signal_blank:
+            conn = "Live but blank — lens covered / camera in use?"
+            color = "#cc9966"
         self.status.config(text=f"{conn}  {self.stream.fps:.0f} fps{rec}", foreground=color)
 
 
@@ -184,9 +189,22 @@ class App(ttk.Frame):
             width=6,
             values=["mp4", "mkv"],
         ).pack(side="left")
-        ttk.Button(toolbar, text="● Record Both", command=self.record_both).pack(side="left", padx=(12, 2))
-        ttk.Button(toolbar, text="■ Stop Both", command=self.stop_both).pack(side="left")
+        ttk.Label(toolbar, text="Microphone:").pack(side="left", padx=(12, 2))
+        self.mic_var = tk.StringVar()
+        self.mic_combo = ttk.Combobox(
+            toolbar, textvariable=self.mic_var, state="readonly", width=22
+        )
+        self.mic_combo.pack(side="left")
+        self.combined_btn = ttk.Button(
+            toolbar, text="● Record (split + audio)", command=self.toggle_combined
+        )
+        self.combined_btn.pack(side="left", padx=(12, 2))
+        self.combined_status = ttk.Label(toolbar, text="", foreground="#888888")
+        self.combined_status.pack(side="left", padx=(6, 0))
         ttk.Label(toolbar, text=f"Saving to: {RECORDINGS_DIR}").pack(side="right")
+
+        self.mics: list[AudioDevice] = []
+        self.recorder: CombinedRecorder | None = None
 
         panels = ttk.Frame(self)
         panels.pack(fill="both", expand=True)
@@ -216,16 +234,73 @@ class App(ttk.Frame):
         if len(devices) >= 2:
             self.left.device_combo.current(0)
             self.right.device_combo.current(1)
+        self.rescan_microphones()
 
-    def record_both(self) -> None:
-        for panel in (self.left, self.right):
-            if panel.stream is not None and not panel.stream.recording:
-                panel.toggle_record()
+    def rescan_microphones(self) -> None:
+        self.mics = enumerate_microphones()
+        values = ["(no audio)"] + [m.label for m in self.mics]
+        self.mic_combo["values"] = values
+        if not self.mic_var.get():
+            self.mic_combo.current(1 if self.mics else 0)
 
-    def stop_both(self) -> None:
-        for panel in (self.left, self.right):
-            if panel.stream is not None and panel.stream.recording:
-                panel.toggle_record()
+    def _selected_mic_index(self) -> int | None:
+        label = self.mic_var.get()
+        for m in self.mics:
+            if m.label == label:
+                return m.index
+        return None
+
+    def _selected_mic_samplerate(self) -> int:
+        label = self.mic_var.get()
+        for m in self.mics:
+            if m.label == label:
+                return m.samplerate
+        return 48000
+
+    def _combined_frames(self):
+        return [
+            panel.stream.latest_frame() if panel.stream is not None else None
+            for panel in (self.left, self.right)
+        ]
+
+    def toggle_combined(self) -> None:
+        if self.recorder is not None and self.recorder.recording:
+            self.recorder.stop()
+            self.combined_btn.config(text="● Record (split + audio)")
+            err = self.recorder.error
+            path = self.recorder.path
+            if err:
+                self.combined_status.config(text=err, foreground="#cc6666")
+            elif path:
+                self.combined_status.config(
+                    text=f"Saved {os.path.basename(path)}", foreground="#66cc66"
+                )
+            self.recorder = None
+            return
+
+        if not CombinedRecorder.available():
+            self.combined_status.config(
+                text="Install 'av' to record combined file", foreground="#cc6666"
+            )
+            return
+
+        self.recorder = CombinedRecorder(
+            self._combined_frames,
+            mic_index=self._selected_mic_index(),
+            fps=25.0,
+            samplerate=self._selected_mic_samplerate(),
+        )
+        path = self.recorder.start(RECORDINGS_DIR, self.container())
+        if path:
+            self.combined_btn.config(text="■ Stop")
+            mic = "with audio" if self._selected_mic_index() is not None else "video only"
+            self.combined_status.config(text=f"Recording ({mic})…", foreground="#66cc66")
+        else:
+            self.combined_status.config(
+                text=self.recorder.error or "Could not start recording",
+                foreground="#cc6666",
+            )
+            self.recorder = None
 
     def _tick(self) -> None:
         self.left.update_preview()
@@ -233,6 +308,8 @@ class App(ttk.Frame):
         self.after(REFRESH_MS, self._tick)
 
     def on_close(self) -> None:
+        if self.recorder is not None and self.recorder.recording:
+            self.recorder.stop()
         self.left.disconnect()
         self.right.disconnect()
         self.master.destroy()

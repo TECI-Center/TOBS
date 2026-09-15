@@ -1,0 +1,22 @@
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Recordings & snapshots produced by the app
+recordings/
+*.mp4
+*.mkv
+*.avi
+*.jpg
+*.png
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

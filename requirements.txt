@@ -1,5 +1,8 @@
 opencv-python>=4.8.0
 Pillow>=10.0.0
 numpy>=1.24.0
+# Combined split-view video + microphone audio muxed into a single file.
+av>=11.0.0
+sounddevice>=0.4.6
 # Windows-only: nicer DirectShow camera names in the device dropdown.
 pygrabber>=0.2; platform_system == "Windows"

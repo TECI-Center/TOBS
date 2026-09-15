@@ -17,7 +17,10 @@ Built with Python + OpenCV + Tkinter.
 - Live side-by-side preview of both cameras.
 - A running `YYYY-MM-DD HH:MM:SS` timestamp is drawn onto every frame — so it is
   visible both in the preview **and** in the saved recordings.
-- Per-camera **Record**, **Snapshot**, plus **Record Both / Stop Both**.
+- Per-camera **Record**, **Snapshot**, plus a combined **Record (split + audio)**
+  that writes **both cameras side-by-side in one frame together with microphone
+  audio into a single MP4/MKV file**.
+- Pick a **microphone** from the toolbar to mux live audio into the combined file.
 - Auto-reconnect if a camera briefly drops off.
 - Files are written to a `recordings/` folder next to the app.
 
@@ -113,8 +116,13 @@ The first time, the OS may ask for **Camera permission** — allow it
    **ORDRO panel** → paste its **Wi-Fi URL** (leave USB device blank).
 3. Click **Connect** on each panel to start the live preview.
 4. Pick the output **Format** (mp4 or mkv) in the toolbar.
-5. Click **● Record** on a panel, or **● Record Both** to capture both at once.
-6. **Snapshot** saves a single timestamped still.
+5. Per-camera capture: click **● Record** on a panel (video-only), or
+   **Snapshot** for a single timestamped still.
+6. Combined capture: choose a **Microphone** in the toolbar, then click
+   **● Record (split + audio)**. This burns both camera feeds side-by-side into
+   **one** frame and muxes the mic audio into a **single** file
+   (`recordings/combined_*.mp4`). Leave the microphone on **(no audio)** to write
+   the split video without sound.
 
 Recordings and snapshots are saved to the `recordings/` folder.
 
@@ -129,6 +137,8 @@ src/tobs/
   app.py                # Tkinter GUI (dual view, controls)
   camera.py             # threaded capture + recorder
   devices.py            # USB video device discovery
+  audio.py              # microphone discovery
+  recorder.py           # combined split-view video + audio muxer (PyAV)
   overlay.py            # timestamp burn-in
 ```
 
@@ -154,7 +164,11 @@ src/tobs/
 
 ## Notes & limitations
 
-- Recordings are **video-only** (no audio) via OpenCV's `VideoWriter`.
+- Per-camera recordings are **video-only** (no audio) via OpenCV's `VideoWriter`.
+- The combined **Record (split + audio)** file carries audio: it is encoded with
+  PyAV (bundled ffmpeg, H.264 video + AAC audio) and needs a selected microphone
+  for sound. `av` and `sounddevice` install from `requirements.txt`; on macOS the
+  OS also prompts for **Microphone** permission the first time.
 - The timestamp reflects your computer's local clock at capture time.
 - USB device index → camera-name mapping is best-effort (macOS via
   `system_profiler`, Windows via `pygrabber`); use the name hint plus a quick

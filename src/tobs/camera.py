@@ -21,6 +21,11 @@ _FOURCC = {
 }
 
 
+def _is_blank(frame: np.ndarray, threshold: float = 5.0) -> bool:
+    """True when a frame is (near) uniformly black — e.g. a covered lens."""
+    return float(frame.mean()) < threshold and float(frame.std()) < threshold
+
+
 class CameraStream:
     """Continuously grabs frames from one capture device in a background thread.
 
@@ -48,6 +53,7 @@ class CameraStream:
         self.connected = False
         self._fps = 0.0
         self._frame_times: list[float] = []
+        self._signal_blank = False
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> None:
@@ -67,34 +73,68 @@ class CameraStream:
             self._cap = None
 
     # -- capture loop ------------------------------------------------------
-    def _backend(self) -> int:
+    def _candidate_backends(self) -> list[int]:
         if isinstance(self.source, str):
-            return cv2.CAP_FFMPEG
+            return [cv2.CAP_FFMPEG]
         system = platform.system()
         if system == "Darwin":
-            return cv2.CAP_AVFOUNDATION
+            return [cv2.CAP_AVFOUNDATION, cv2.CAP_ANY]
         if system == "Windows":
-            return cv2.CAP_DSHOW
-        return cv2.CAP_ANY
+            # DSHOW is the common default, but some integrated webcams only
+            # deliver real (non-black) frames through MSMF, so try both.
+            return [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
+        return [cv2.CAP_ANY]
 
     def _open(self) -> bool:
         if isinstance(self.source, str) and self.source.lower().startswith("rtsp"):
             # Prefer TCP for RTSP: more reliable than UDP over Wi-Fi.
             os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
 
-        cap = cv2.VideoCapture(self.source, self._backend())
-        if not cap.isOpened():
-            cap.release()
-            return False
-        if isinstance(self.source, str):
-            # Keep latency low on live network streams.
-            try:
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            except cv2.error:
-                pass
-        self._cap = cap
-        self.connected = True
-        return True
+        fallback: cv2.VideoCapture | None = None
+        for backend in self._candidate_backends():
+            cap = cv2.VideoCapture(self.source, backend)
+            if not cap.isOpened():
+                cap.release()
+                continue
+            if isinstance(self.source, str):
+                # Keep latency low on live network streams.
+                try:
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                except cv2.error:
+                    pass
+
+            frame = self._warmup(cap)
+            if frame is None:
+                cap.release()
+                continue
+            if not _is_blank(frame):
+                self._cap = cap
+                self.connected = True
+                return True
+            # Opened but only produced blank frames — remember it, then try the
+            # next backend in case another one delivers real video.
+            if fallback is None:
+                fallback = cap
+            else:
+                cap.release()
+
+        if fallback is not None:
+            self._cap = fallback
+            self.connected = True
+            return True
+        return False
+
+    def _warmup(self, cap: cv2.VideoCapture, reads: int = 8) -> np.ndarray | None:
+        """Read a few frames; some webcams emit black frames right after open."""
+        frame: np.ndarray | None = None
+        for _ in range(reads):
+            ok, f = cap.read()
+            if ok and f is not None:
+                frame = f
+                if not _is_blank(f):
+                    break
+            time.sleep(0.03)
+        return frame
 
     def _loop(self) -> None:
         while self._running:
@@ -114,11 +154,13 @@ class CameraStream:
                 time.sleep(0.5)
                 continue
 
+            blank = _is_blank(frame)  # measure before burning in the timestamp
             draw_timestamp(frame, label=self.label, corner=self.overlay_corner)
             self._update_fps()
 
             with self._lock:
                 self._latest = frame
+                self._signal_blank = blank
                 if self._recording and self._writer is not None:
                     self._writer.write(frame)
 
@@ -137,6 +179,11 @@ class CameraStream:
     @property
     def fps(self) -> float:
         return self._fps
+
+    @property
+    def signal_blank(self) -> bool:
+        """True when frames are arriving but appear uniformly black."""
+        return self._signal_blank
 
     @property
     def recording(self) -> bool:

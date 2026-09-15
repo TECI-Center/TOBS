@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import platform
 import subprocess
+import time
 from dataclasses import dataclass
 
 import cv2
@@ -64,32 +65,70 @@ def _camera_names() -> list[str]:
     return []
 
 
-def _capture_backend() -> int:
+def _capture_backends() -> list[int]:
     system = platform.system()
     if system == "Darwin":
-        return cv2.CAP_AVFOUNDATION
+        return [cv2.CAP_AVFOUNDATION]
     if system == "Windows":
-        return cv2.CAP_DSHOW
-    return cv2.CAP_ANY
+        # Some cameras (notably the GoPro Webcam) only work under one backend.
+        return [cv2.CAP_DSHOW, cv2.CAP_MSMF]
+    return [cv2.CAP_ANY]
 
 
-def enumerate_devices(max_index: int = 8) -> list[DeviceInfo]:
-    """Probe capture device indices and return the ones that open successfully."""
+def _probe(idx: int, api: int, reads: int = 6) -> tuple[int, int] | None:
+    """Open a device index and return its (width, height) if it yields a frame.
+
+    Reads a few times because some webcams (e.g. the GoPro Webcam virtual
+    camera) need a brief warm-up before delivering the first frame.
+    """
+    cap = cv2.VideoCapture(idx, api)
+    try:
+        if not cap.isOpened():
+            return None
+        for _ in range(reads):
+            ok, frame = cap.read()
+            if ok and frame is not None:
+                h, w = frame.shape[:2]
+                return w, h
+            time.sleep(0.05)
+        return None
+    finally:
+        cap.release()
+
+
+def enumerate_devices(max_index: int = 10) -> list[DeviceInfo]:
+    """List capture devices, keeping OS-named cameras even if slow to start.
+
+    Devices the OS reports by name (via pygrabber on Windows / system_profiler
+    on macOS) are always listed — even when a quick probe returns no frame — so
+    slow-to-initialize cameras like the GoPro Webcam remain selectable.
+    """
     names = _camera_names()
-    api = _capture_backend()
+    backends = _capture_backends()
 
     found: list[DeviceInfo] = []
+    seen: set[int] = set()
+
+    for idx, name in enumerate(names):
+        res = None
+        for api in backends:
+            res = _probe(idx, api)
+            if res:
+                break
+        w, h = res if res else (0, 0)
+        found.append(DeviceInfo(index=idx, width=w, height=h, name=name))
+        seen.add(idx)
+
+    # Probe any remaining indices the OS did not name (primary backend only).
+    # Indices are contiguous, so stop at the first gap to avoid noisy probes.
     for idx in range(max_index):
-        cap = cv2.VideoCapture(idx, api)
-        try:
-            if not cap.isOpened():
-                continue
-            ok, frame = cap.read()
-            if not ok or frame is None:
-                continue
-            h, w = frame.shape[:2]
-            name = names[len(found)] if len(found) < len(names) else ""
-            found.append(DeviceInfo(index=idx, width=w, height=h, name=name))
-        finally:
-            cap.release()
+        if idx in seen:
+            continue
+        res = _probe(idx, backends[0])
+        if not res:
+            break
+        w, h = res
+        found.append(DeviceInfo(index=idx, width=w, height=h))
+
+    found.sort(key=lambda d: d.index)
     return found
