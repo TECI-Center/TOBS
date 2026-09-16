@@ -19,6 +19,16 @@ PREVIEW_W = 480
 PREVIEW_H = 360
 REFRESH_MS = 33  # ~30 fps preview
 
+# Capture backends the user can force per panel (helps on Windows where a given
+# camera only delivers live frames through one specific backend).
+BACKENDS: dict[str, int | None] = {
+    "Auto": None,
+    "DirectShow": cv2.CAP_DSHOW,
+    "MSMF": cv2.CAP_MSMF,
+    "AVFoundation": cv2.CAP_AVFOUNDATION,
+    "Any": cv2.CAP_ANY,
+}
+
 
 class CameraPanel(ttk.Frame):
     """One camera column: device picker, live preview, record/snapshot."""
@@ -48,6 +58,19 @@ class CameraPanel(ttk.Frame):
         self.url_var = tk.StringVar()
         self.url_entry = ttk.Entry(url_row, textvariable=self.url_var)
         self.url_entry.pack(side="left", fill="x", expand=True, padx=4)
+
+        backend_row = ttk.Frame(self)
+        backend_row.pack(fill="x", pady=(3, 0))
+        ttk.Label(backend_row, text="Backend:").pack(side="left")
+        self.backend_var = tk.StringVar(value="Auto")
+        self.backend_combo = ttk.Combobox(
+            backend_row,
+            textvariable=self.backend_var,
+            state="readonly",
+            width=14,
+            values=list(BACKENDS.keys()),
+        )
+        self.backend_combo.pack(side="left", padx=4)
 
         if hint:
             ttk.Label(self, text=hint, foreground="#888888", wraplength=PREVIEW_W).pack(
@@ -105,13 +128,16 @@ class CameraPanel(ttk.Frame):
                 self.status.config(text="Pick a USB device or enter a URL", foreground="#cc6666")
                 return
             source = dev.index
-        self.stream = CameraStream(source=source, label=self.title)
+        self.stream = CameraStream(
+            source=source, label=self.title, backend=BACKENDS.get(self.backend_var.get())
+        )
         self.stream.start()
         self.connect_btn.config(text="Disconnect")
         self.record_btn.config(state="normal")
         self.snapshot_btn.config(state="normal")
         self.device_combo.config(state="disabled")
         self.url_entry.config(state="disabled")
+        self.backend_combo.config(state="disabled")
 
     def disconnect(self) -> None:
         if self.stream is not None:
@@ -122,6 +148,7 @@ class CameraPanel(ttk.Frame):
         self.snapshot_btn.config(state="disabled")
         self.device_combo.config(state="readonly")
         self.url_entry.config(state="normal")
+        self.backend_combo.config(state="readonly")
         self.status.config(text="Not connected", foreground="#888888")
         self._blank()
 

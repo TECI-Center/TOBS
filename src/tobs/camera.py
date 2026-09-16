@@ -35,9 +35,16 @@ class CameraStream:
     recording share the exact same overlay.
     """
 
-    def __init__(self, source: int | str, label: str = "", overlay_corner: str = "bottom-left"):
+    def __init__(
+        self,
+        source: int | str,
+        label: str = "",
+        overlay_corner: str = "bottom-left",
+        backend: int | None = None,
+    ):
         self.source = source
         self.label = label
+        self.backend = backend
         self.overlay_corner = overlay_corner
 
         self._cap: cv2.VideoCapture | None = None
@@ -74,6 +81,9 @@ class CameraStream:
 
     # -- capture loop ------------------------------------------------------
     def _candidate_backends(self) -> list[int]:
+        if self.backend is not None:
+            # User forced a specific backend; respect it exactly.
+            return [self.backend]
         if isinstance(self.source, str):
             return [cv2.CAP_FFMPEG]
         system = platform.system()
